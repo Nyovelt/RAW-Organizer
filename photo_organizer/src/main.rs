@@ -4,6 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use chrono::NaiveDate; // For working with dates
+use rayon::prelude::*; // Rayon for parallel processing
 
 // Function to get photo's date taken using exiftool
 fn get_photo_date_taken(photo_path: &Path) -> io::Result<Option<NaiveDate>> {
@@ -28,7 +29,6 @@ fn get_photo_date_taken(photo_path: &Path) -> io::Result<Option<NaiveDate>> {
 
 // Function to compress JPEG using ImageMagick's convert or jpegoptim
 fn compress_jpeg(jpeg_path: &Path, quality: u8) -> io::Result<()> {
-    // First, attempt to use ImageMagick's convert
     let status_convert = Command::new("magick")
         .arg(jpeg_path)
         .arg("-quality")
@@ -107,22 +107,24 @@ fn move_file_to_date_folder(photo_path: &Path, destination_dir: &Path, date: Nai
     Ok(())
 }
 
-// Main function to organize photos
+// Main function to organize photos with multithreading using Rayon
 fn organize_photos_by_date(source_dir: &Path, destination_dir: &Path, convert_to_jpg: bool, jpeg_quality: u8) -> io::Result<()> {
-    for entry in fs::read_dir(source_dir)? {
-        let entry = entry?;
-        let path = entry.path();
+    // Collect all files in the source directory
+    let files: Vec<PathBuf> = fs::read_dir(source_dir)?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("arw")))
+        .collect();
 
-        // Only consider ARW files
-        if path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("arw")) {
-            if let Some(date) = get_photo_date_taken(&path)? {
-                move_file_to_date_folder(&path, destination_dir, date, convert_to_jpg, jpeg_quality)?;
-                println!("Moved file {:?} to folder for date {:?}", path.file_name().unwrap(), date);
-            } else {
-                println!("Could not determine the date for file {:?}", path.file_name().unwrap());
+    // Use Rayon for parallel processing of files
+    files.par_iter().for_each(|path| {
+        if let Ok(Some(date)) = get_photo_date_taken(path) {
+            if let Err(e) = move_file_to_date_folder(path, destination_dir, date, convert_to_jpg, jpeg_quality) {
+                eprintln!("Failed to process {:?}: {}", path, e);
             }
+        } else {
+            eprintln!("Could not determine the date for file {:?}", path.file_name().unwrap());
         }
-    }
+    });
 
     Ok(())
 }
